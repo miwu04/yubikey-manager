@@ -184,6 +184,14 @@ class FORM_FACTOR(IntEnum):
         code &= 0xF
         return cls(code) if code in cls.__members__.values() else cls.UNKNOWN
 
+    @classmethod
+    def from_str(cls, name: str) -> FORM_FACTOR:
+        if name.endswith("Canary"):
+            return cls.USB_C_KEYCHAIN
+        elif name.endswith("Pigeon"):
+            return cls.USB_A_KEYCHAIN
+        return cls.UNKNOWN
+
 
 @unique
 class DEVICE_FLAG(IntFlag):
@@ -462,6 +470,7 @@ SLOT_YK4_SET_DEVICE_INFO = 0x15
 
 class _Backend(abc.ABC):
     version: Version
+    is_cano: bool = False
 
     @abc.abstractmethod
     def close(self) -> None: ...
@@ -526,6 +535,8 @@ class _ManagementSmartCardBackend(_Backend):
 
             select_str = select_bytes.decode()
             self.version = Version.from_string(select_str)
+            if self.try_canokey_admin():
+                return
             # For YubiKey NEO, we use the OTP application for further commands
             if self.version[0] == 3:
                 # Workaround to "de-select" on NEO, otherwise it gets stuck.
@@ -535,6 +546,8 @@ class _ManagementSmartCardBackend(_Backend):
                 self.protocol.select(AID.OTP)
 
         except ApplicationNotAvailableError:
+            if self.try_canokey_admin():
+                return
             if smartcard_connection.transport == TRANSPORT.NFC and not scp_key_params:
                 # Probably NEO over NFC
                 status = self.protocol.select(AID.OTP)
@@ -544,6 +557,33 @@ class _ManagementSmartCardBackend(_Backend):
         self.protocol.configure(self.version)
         if scp_key_params:
             self.protocol.init_scp(scp_key_params)
+
+    def try_canokey_admin(self):
+        try:
+            self.protocol.select(b"\xf0\x00\x00\x00\x00")
+            select_bytes, _ = self.protocol.connection.send_and_receive(
+                b"\x00\x31\x00\x00\x20"
+            )
+            select_str = select_bytes.decode()
+            self.version = Version.from_string(select_str)
+            self.is_cano = True
+            logger.debug(f"select_str={select_str} self.version={self.version}")
+            return True
+        except Exception as e:
+            logger.debug(f"try_canokey_admin failed: {e}")
+            return False
+
+    def read_serial(self):
+        sn, _ = self.protocol.connection.send_and_receive(b"\x00\x32\x00\x00\x04")
+        return bytes2int(sn)
+
+    def read_product_string(self):
+        sn, _ = self.protocol.connection.send_and_receive(b"\x00\x31\x01\x00\x20")
+        return sn.decode()
+
+    def read_nfc_enable(self):
+        st, _ = self.protocol.connection.send_and_receive(b"\x00\x14\x00\x00\x01")
+        return bytes2int(st)
 
     def close(self):
         self.protocol.close()
@@ -568,6 +608,11 @@ CTAP_VENDOR_FIRST = 0x40
 CTAP_YUBIKEY_DEVICE_CONFIG = CTAP_VENDOR_FIRST
 CTAP_READ_CONFIG = CTAP_VENDOR_FIRST + 2
 CTAP_WRITE_CONFIG = CTAP_VENDOR_FIRST + 3
+
+ADMIN_INS_NFC_ENABLE = 0x14
+ADMIN_INS_READ_VERSION = 0x31
+ADMIN_INS_READ_SERIAL = 0x32
+ADMIN_INS_READ_CONFIG = 0x40
 
 
 class _ManagementCtapBackend(_Backend):
@@ -641,8 +686,40 @@ class ManagementSession:
 
     def read_device_info(self) -> DeviceInfo:
         """Get detailed information about the YubiKey."""
+        if self.backend.is_cano:
+            return self._build_cano_device_info()
         require_version(self.version, (4, 1, 0))
         return self._do_read_device_info()
+
+    def _build_cano_device_info(self) -> DeviceInfo:
+        capabilities = (
+            CAPABILITY.U2F
+            | CAPABILITY.FIDO2
+            | CAPABILITY.PIV
+            | CAPABILITY.OPENPGP
+            | CAPABILITY.OATH
+        )
+        name = self.backend.read_product_string()
+        info = DeviceInfo(
+            config=DeviceConfig(
+                enabled_capabilities={
+                    TRANSPORT.USB: capabilities,
+                    TRANSPORT.NFC: capabilities,
+                },
+                auto_eject_timeout=0,
+                challenge_response_timeout=0,
+                device_flags=DEVICE_FLAG(0),
+            ),
+            serial=self.backend.read_serial(),
+            version=self.version,
+            form_factor=FORM_FACTOR.from_str(name),
+            supported_capabilities={
+                TRANSPORT.USB: capabilities,
+                TRANSPORT.NFC: capabilities,
+            },
+            is_locked=False,
+        )
+        return info
 
     def _do_read_device_info(self) -> DeviceInfo:
         more_data = True

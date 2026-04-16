@@ -71,9 +71,9 @@ class CtapYubiKeyDevice(YkmanDevice):
 def list_ctap_devices() -> list[CtapYubiKeyDevice]:
     devs = []
     for desc in list_descriptors():
-        if desc.vid == 0x1050:
+        if desc.vid == 0x1050 or desc.vid == 0x20A0:
             try:
                 devs.append(CtapYubiKeyDevice(desc))
             except ValueError:
-                logger.debug(f"Unsupported Yubico device with PID: {desc.pid:02x}")
+                logger.debug(f"Unsupported FIDO device with PID: {desc.pid:02x}")
     return devs
