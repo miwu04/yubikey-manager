@@ -379,6 +379,12 @@ def get_name(info: DeviceInfo, key_type: YUBIKEY | None) -> str:
     """
     usb_supported = info.supported_capabilities[TRANSPORT.USB]
 
+    if info.version[0] == 0:
+        return f"YubiKey ({info.version})"
+
+    if info.is_cano:
+        return f"CanoKey {info.form_factor}"
+
     # Guess the key type (over NFC)
     if not key_type:
         if info.version[0] == 3:

@@ -311,6 +311,7 @@ class DeviceInfo:
     is_locked: bool
     is_fips: bool = False
     is_sky: bool = False
+    is_cano: bool = False
     part_number: str | None = None
     fips_capable: CAPABILITY = CAPABILITY(0)
     fips_approved: CAPABILITY = CAPABILITY(0)
@@ -415,6 +416,7 @@ class DeviceInfo:
             locked,
             fips,
             sky,
+            False,
             part_number,
             fips_capable,
             fips_approved,
@@ -718,6 +720,7 @@ class ManagementSession:
                 TRANSPORT.NFC: capabilities,
             },
             is_locked=False,
+            is_cano=True,
         )
         return info
 
